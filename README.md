@@ -41,7 +41,7 @@ None of the numbers below come from the original dataset.
 | Companies | 150 in 8 GICS sectors |
 | Card holder cohorts | 12, joining and leaving at different dates (at least 3 active on any day) |
 | Period | 1 January 2016 to 31 December 2023: daily spend, business-day returns |
-| Rows | about 3.7 million (date, cohort, stock, spend in dollars) |
+| Rows | about 3.5 million (date, cohort, stock, spend in dollars) |
 
 **What the panel sees.** Each company has a card share $e_i$, the part of its revenue paid by consumers with cards. It averages about 0.7 in consumer discretionary and 0.6 in consumer staples, and 0.03 in financials. A company's revenue news has a consumer part, which the panel sees, and another part, which it does not:
 
@@ -86,76 +86,94 @@ Every step is point-in-time. [tests/test_no_lookahead.py](tests/test_no_lookahea
 
 ## Study design
 
-- **Development and evaluation are separate.** Design choices were made on a development simulation (seed 7). The final configuration was then frozen and run on an evaluation simulation (seed 2024), plus four further seeds for robustness.
-- **Out of sample:** 2019 to 2023, 1,303 trading days, including the 2020 crash.
+- **Development and evaluation are separate.** Design choices were made on development simulations (seeds 7 to 11). The configuration was then frozen and run once on 50 evaluation simulations (seeds 3001 to 3050), which were not used for any design choice.
+- **Out of sample:** 2019 to 2023, about 1,300 trading days per seed, including the 2020 crash.
 - **Forecast skill:** daily Spearman rank correlation between forecast and next-day return across stocks (rank IC), with a Newey-West t-statistic (10 lags).
-- **Ablations:** each row below changes one choice relative to the final pipeline.
+- **Comparing variants:** each variant changes one choice relative to the final pipeline. Differences are reported as the mean paired difference in net Sharpe across the 50 seeds, with a 95% bootstrap confidence interval, so "within noise" is a measured statement rather than a guess.
 
 ## Results
 
-Evaluation seed 2024. Card oracle IC 0.0203.
+Across the 50 evaluation seeds the card oracle has a mean rank IC of 0.0218, the ceiling for a card-based forecast. The final pipeline reaches a mean IC of 0.0156, recovering 72% of the oracle on average, with a range of 29% to 110% across seeds. Its net Sharpe ratio averages 1.05, with a 95% confidence interval of 0.92 to 1.17, but the ratio of a single seed ranges from -0.47 to 1.98 and the IC t-statistic from 1.1 to 6.7. One backtest says little; the distribution is the result.
 
-| Variant | Mean IC | t (NW) | Sharpe gross | Sharpe net | Return net | Vol | Max DD | Turnover/day |
-|---|---|---|---|---|---|---|---|---|
-| **Final pipeline** | **0.0132** | **3.2** | **1.35** | **0.90** | **9.4%** | **10.4%** | **16.4%** | **0.37** |
-| Pooled winsorisation instead of per-series filter | 0.0122 | 3.2 | 1.10 | 0.63 | 6.4% | 10.3% | 15.6% | 0.38 |
-| Cohort offsets removed before averaging | 0.0153 | 3.9 | 1.61 | 1.13 | 12.0% | 10.6% | 15.2% | 0.40 |
-| Year-on-year growth instead of calendar buckets | 0.0150 | 4.0 | 1.44 | 1.11 | 11.7% | 10.6% | 13.3% | 0.28 |
-| Lagged values instead of trailing means | 0.0125 | 3.3 | 1.07 | -0.65 | -7.2% | 11.2% | 46.7% | 1.52 |
-| 50-day moving average instead of ridge | 0.0031 | 0.7 | 1.09 | 1.08 | 12.2% | 11.3% | 22.1% | 0.01 |
-| All sectors traded (no sector filter) | 0.0112 | 3.8 | 1.72 | 1.05 | 8.3% | 7.9% | 9.5% | 0.41 |
-| Sectors chosen on the test period | 0.0132 | 3.2 | 1.35 | 0.90 | 9.4% | 10.4% | 16.4% | 0.37 |
-| Data available 3 days late | 0.0115 | 3.3 | 1.56 | 1.13 | 10.5% | 9.3% | 14.7% | 0.32 |
-| Costs of 10 bp instead of 5 bp | 0.0132 | 3.2 | 1.35 | 0.45 | 4.7% | 10.4% | 18.8% | 0.37 |
-| Original design, long-only (see below) | 0.0119 | 3.7 | 0.93 | 0.61 | 13.3% | 21.9% | 57.0% | 0.57 |
+| Variant | Mean IC | Net Sharpe | 95% CI | Turnover/day |
+|---|---|---|---|---|
+| **Final pipeline** | **0.0156** | **1.05** | **0.92 to 1.17** | **0.43** |
+| Pooled winsorisation instead of per-series filter | 0.0156 | 1.03 | 0.92 to 1.14 | 0.45 |
+| Cohort offsets removed before averaging | 0.0149 | 0.96 | 0.84 to 1.08 | 0.42 |
+| Year-on-year growth instead of calendar buckets | 0.0121 | 0.83 | 0.70 to 0.96 | 0.32 |
+| Lagged values instead of trailing means | 0.0116 | -0.83 | -0.98 to -0.68 | 1.74 |
+| 50-day moving average instead of ridge | -0.0004 | -0.10 | -0.25 to 0.04 | 0.01 |
+| All sectors traded (no sector filter) | 0.0110 | 0.75 | 0.62 to 0.88 | 0.49 |
+| Sectors chosen on the test period | 0.0175 | 1.28 | 1.18 to 1.39 | 0.42 |
+| Data available 3 days late | 0.0118 | 0.66 | 0.53 to 0.78 | 0.42 |
+| Costs of 10 bp instead of 5 bp | 0.0156 | 0.53 | 0.41 to 0.66 | 0.43 |
+| Gradient-boosted trees instead of ridge | 0.0013 | -0.22 | -0.36 to -0.07 | 0.30 |
+| Beta- and sector-neutral spread | 0.0156 | 1.45 | 1.28 to 1.62 | 0.37 |
+| Cost-aware rebalancing | 0.0156 | 1.17 | 1.04 to 1.29 | 0.29 |
+| Borrow cost on the short side | 0.0156 | 1.00 | 0.87 to 1.13 | 0.43 |
+| Original design, long-only (see below) | 0.0153 | 0.43 | 0.31 to 0.55 | 0.57 |
 
-Robustness across five evaluation seeds:
+The spread of net Sharpe between seeds is wider than the gap between most variants.
 
-| Seed | Card oracle IC | Final IC | t (NW) | Final net Sharpe | No sector filter: IC | net Sharpe |
-|---|---|---|---|---|---|---|
-| 2024 | 0.0203 | 0.0132 | 3.2 | 0.90 | 0.0112 | 1.05 |
-| 2025 | 0.0176 | 0.0110 | 3.2 | 0.31 | 0.0090 | 0.21 |
-| 2026 | 0.0217 | 0.0099 | 2.2 | -0.31 | 0.0074 | -0.08 |
-| 2027 | 0.0264 | 0.0182 | 4.6 | 1.10 | 0.0105 | 0.35 |
-| 2028 | 0.0208 | 0.0205 | 6.0 | 1.76 | 0.0130 | 1.44 |
+![Net Sharpe across seeds](docs/figures/sharpe_distribution.png)
 
-The full output, including per-sector statistics and ridge coefficients, is in [results/](results).
+Measured against the final pipeline on the same seeds, pooled winsorisation and removing cohort offsets cannot be told apart from it: the 95% interval for the paired difference in net Sharpe includes zero. Year-on-year adjustment, within noise on fewer seeds, is a small but consistent loss over 50 (a net-Sharpe difference of -0.22, 95% CI -0.39 to -0.05). Single lags, the plain moving average and the gradient-boosted tree lose to the final pipeline by a wide margin, and trading every sector lowers the net Sharpe as well.
+
+![Paired difference from the final pipeline](docs/figures/ablation_differences.png)
+
+The full output, including per-sector statistics, the paired differences and the simulator sweeps, is in [results/](results).
 
 ## Findings
 
-1. **Recovery.** Across seeds, the pipeline reaches 46% to 99% of the card oracle's IC (mean 0.015 against 0.021), with t-statistics between 2.2 and 6.0.
-2. **Skill sits where card revenue is.** Out-of-sample IC is highest in consumer discretionary and consumer staples. Where the card share is small it is close to zero or negative. Industrials shows a t-statistic of -2.1 in this seed, which is consistent with chance when eight sectors are tested. Restricting the portfolio to sectors that passed a t-test in the training data raised the IC in all five seeds and the net Sharpe in three. Choosing sectors by test-period performance, as in the first version, picked the same sectors here and added nothing.
+1. **Recovery.** Across 50 seeds the pipeline reaches a mean IC of 0.0156 against the oracle's 0.0218, recovering 72% on average, with IC t-statistics between 1.1 and 6.7.
+2. **Skill sits where card revenue is.** Out-of-sample IC is highest in consumer discretionary and consumer staples. Where the card share is small it is close to zero or negative. Restricting the portfolio to sectors that passed a t-test in the training data raised the IC and the net Sharpe. Choosing sectors by test-period performance does slightly better, but it uses the future and only serves as a benchmark.
 
    ![IC by sector](docs/figures/ic_by_sector.png)
 
-3. **The ridge learns the right shape.** Weights are positive on the last one to two weeks and negative on two to twelve weeks back. That is a "new information minus what is already priced" filter, the shape implied by gradual learning.
+3. **The ridge learns the right shape, and flexibility does not help.** Weights are positive on the last one to two weeks and negative on two to twelve weeks back, the "new information minus what is already priced" shape implied by gradual learning. A gradient-boosted tree on the same six features, chosen and refitted the same way, reaches a mean IC of only 0.0013, well below the ridge's 0.0156. The simulated signal is linear in the predictor, so the extra flexibility finds nothing.
 
    ![Implied lag weights](docs/figures/lag_profile.png)
 
-4. **Feature design decides the net result.** Regressing on single lagged values gives a similar IC but turns the book over 1.5 times a day, and the strategy loses money after costs. Trailing means give the same model a smoother input and cut turnover by three quarters.
-5. **A plain moving average has no skill here.** A 50-day average mostly measures what investors already know, and its IC is indistinguishable from zero. Its positive Sharpe ratio comes from a portfolio that holds the same names for months, not from forecasting. That follows from the simulated learning process; real data could behave differently.
-6. **Pooled winsorisation caps large companies, not outliers.** Clipping each day at the 95th percentile of all stocks and cohorts caps more than half of all observations for 7 of the 150 companies, the largest merchants in the panel.
+4. **Feature design decides the net result.** Single lagged values give a similar IC (0.0116) but turn the book over 1.7 times a day and lose money after costs (net Sharpe -0.83). Trailing means give the same model a smoother input, cut turnover to 0.43 and lift the net Sharpe to 1.05.
+5. **A plain moving average has no skill here.** A 50-day average mostly measures what investors already know, and its IC is indistinguishable from zero (-0.0004). That follows from the simulated learning process; real data could behave differently.
+6. **Pooled winsorisation caps large companies, not outliers.** Clipping each day at the 95th percentile of all stocks and cohorts caps more than half of all observations for a handful of the largest merchants in the panel.
 
    ![Pooled clipping](docs/figures/pooled_clipping.png)
 
-7. **Many processing choices are within noise.** Cleaning, cohort normalisation and the choice between calendar-bucket and year-on-year seasonal adjustment move the IC by about 0.002 either way. That is smaller than the variation between seeds, and for pooled winsorisation and year-on-year growth the sign of the difference flips between the development and evaluation simulations. A single backtest cannot rank them.
-8. **Costs matter.** At 10 bp per unit of turnover, the net Sharpe ratio halves to 0.45.
-9. **The long-only design rode the market.** The original design (untuned ridge on lags, sectors picked on the test period, long-only top half) earned 13.3% a year with a 57% drawdown in the 2020 crash. The equal-weight market earned 15.3% at lower volatility, so its return is market exposure.
+7. **Some processing choices are within noise.** Pooled winsorisation and removing cohort offsets each move the net Sharpe by less than the variation between seeds: the 95% confidence interval for the paired difference from the final pipeline includes zero. The choice between calendar-bucket and year-on-year adjustment is the borderline case. It is within noise on a handful of seeds but a small, consistent loss across 50 (-0.22 in net Sharpe). A single backtest cannot separate the first two.
+8. **Costs and borrow matter.** At 10 bp per unit of turnover the mean net Sharpe halves to 0.53. A borrow fee of 50 bp a year on the short side lowers it only to 1.00.
+9. **A neutral book and cost-aware trading improve the net result.** A beta- and sector-neutral book, which trades the forecast after projecting out estimated market beta and the sector dummies, raises the mean net Sharpe to 1.45 and cuts turnover to 0.37 and the drawdown sharply. Moving part of the way towards the target weights each day, rather than trading fully, cuts turnover to 0.29 and lifts the net Sharpe to 1.17.
 
-   ![Original vs market](docs/figures/pnl_original_vs_market.png)
+   ![Portfolio variants](docs/figures/portfolio_variants.png)
+
+10. **The long-only design rode the market.** The original design (untuned ridge on lags, sectors picked on the test period, long-only top half) earned a mean net Sharpe of 0.43 with large drawdowns in the 2020 crash. Its return is mostly market exposure.
+
+    ![Original vs market](docs/figures/pnl_original_vs_market.png)
+
+11. **How far the conclusions depend on the simulator.** Varying the five main simulator parameters one at a time changes the level of skill but not the ranking of the methods. Recovery rises when the card share or the signal is stronger and falls when the data arrives late or the panel is noisier, while the moving average stays near zero and the sector filter keeps helping throughout.
+
+    ![Simulator sweeps](docs/figures/sensitivity.png)
 
 ## Limitations
 
-- **The simulator decides which methods win.** The moving average fails because of how investor learning is modelled. The study shows the pipeline recovering a known signal and how each choice affects that recovery, not how real card data behaves.
-- **Simple portfolio and cost model.** Equal weights, no risk model beyond dollar neutrality, linear costs, and no borrow costs, capacity limits or market impact.
-- **Statistics.** Five evaluation seeds and one test period per seed. Net Sharpe ratios vary from -0.3 to 1.8 across seeds, so single-seed differences in the table are not reliable.
+- **The simulator shapes the level of skill.** The sweeps above show which conclusions survive a change in the data-generating process and which do not. What they cannot show is behaviour on real card data: the study measures recovery of a known signal, not a tradable edge.
+- **Portfolio and cost model.** The book now has a beta- and sector-neutral version, a cost-aware rebalancing rule and a short borrow cost. Still absent: capacity limits, market impact, a full risk model, and financing beyond a flat borrow fee.
+- **Statistics.** Fifty evaluation seeds with a 95% bootstrap confidence interval on each paired difference. Still one test period per seed, and one simulated process.
 
 ## Reproducing
 
 ```bash
 pip install -e ".[dev]"
-pytest                       # 28 tests, a few seconds
-python scripts/run_study.py  # a few minutes; rewrites results/ and docs/figures/
+pytest                          # a few seconds
+python scripts/run_study.py     # a few minutes; resumable, fills results/ and docs/figures/
+```
+
+The study caches one file per evaluation seed under `results/.cache/`, so it can be run a seed at a time (`python scripts/run_study.py --seeds 3001 3002`) and resumed. Rebuilding the research note needs Playwright and Chromium, which are an optional dependency group and are not required for the study or CI:
+
+```bash
+pip install -e ".[report]"
+playwright install chromium
+python scripts/build_report.py  # rebuilds docs/report.pdf from results/
 ```
 
 ## Repository layout
@@ -165,10 +183,12 @@ python scripts/run_study.py  # a few minutes; rewrites results/ and docs/figures
 | `src/spendsignal/simulate.py` | Credit card panel and return simulator |
 | `src/spendsignal/panel.py` | Cleaning, outlier filters, cohort normalisation |
 | `src/spendsignal/seasonality.py` | Calendar-bucket and year-on-year adjustment, trading-day alignment |
-| `src/spendsignal/forecast.py` | Trailing-mean and lag features, walk-forward ridge, sector selection |
-| `src/spendsignal/evaluation.py` | Rank IC, Newey-West t-statistic, per-sector statistics |
-| `src/spendsignal/backtest.py` | Long-short and long-only portfolios, costs, performance |
+| `src/spendsignal/forecast.py` | Trailing-mean and lag features, walk-forward ridge and tree, sector selection |
+| `src/spendsignal/evaluation.py` | Rank IC, Newey-West t-statistic, per-sector statistics, bootstrap intervals |
+| `src/spendsignal/backtest.py` | Long-short, long-only and beta- and sector-neutral portfolios, rebalancing, costs |
 | `src/spendsignal/pipeline.py` | Configurable end-to-end pipeline and the original-design preset |
+| `src/spendsignal/study.py` | Variant grid, per-seed evaluation, aggregation and the simulator sweeps |
 | `scripts/run_study.py` | Runs the study and writes all results and figures |
-| `tests/` | Unit tests and point-in-time tests |
+| `scripts/build_report.py` | Builds the research note from `results/` |
+| `tests/` | Unit tests, point-in-time tests and the README-against-results check |
 | `docs/report.pdf` | Research note |

@@ -69,3 +69,16 @@ def test_walk_forward_recovers_planted_signal():
     ic = evaluation.daily_rank_ic(wf.predictions, fwd)
     assert ic.mean() > 0.1
     assert wf.coefficients.loc[2022, 0] > abs(wf.coefficients.loc[2022, 5])
+
+
+def test_walk_forward_tree_recovers_planted_signal():
+    signal = _panel(n_days=900, n_stocks=60, seed=3)
+    noise = _panel(n_days=900, n_stocks=60, seed=4)
+    fwd = 0.2 * signal + noise
+    wf = forecast.walk_forward_tree(
+        signal, fwd, lags=(0, 5), features="lags", first_test_year=2022, learning_rates=(0.05, 0.1)
+    )
+    ic = evaluation.daily_rank_ic(wf.predictions, fwd)
+    assert ic.mean() > 0.05
+    assert wf.coefficients.empty  # a tree has no linear coefficients
+    assert wf.alphas.loc[2022] in (0.05, 0.1)  # a learning rate was chosen on held-out data

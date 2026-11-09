@@ -1,9 +1,15 @@
-"""Run the full study: ablations on the main evaluation seed, robustness across seeds, figures.
+"""Run the full study and write every file the README and the report depend on.
 
-Usage:
-    python scripts/run_study.py            # writes results/ and docs/figures/
+The study evaluates each pipeline variant on all evaluation seeds, sweeps the main
+simulator parameters, and draws the figures. Per-seed results are cached, so the
+run is resumable and can be done one seed at a time:
 
-All numbers in README.md and docs/report.pdf come from the files this script writes.
+    python scripts/run_study.py                           # the whole study, resuming from cache
+    python scripts/run_study.py --seeds 3001 --fill-only  # fill one evaluation seed into the cache
+
+Results and figures are written only once the cache is complete, so a partial run never
+leaves inconsistent files behind. All numbers in README.md and docs/report.pdf come from the
+files this script writes.
 """
 
 from __future__ import annotations
@@ -15,110 +21,74 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from spendsignal import forecast, panel, plotting, seasonality
+from spendsignal import forecast, panel, plotting, seasonality, study
 from spendsignal.evaluation import ic_by_group
-from spendsignal.pipeline import ORIGINAL, PipelineConfig, oracle_ic, replace, run
+from spendsignal.pipeline import ORIGINAL, PipelineConfig, replace, run
 from spendsignal.simulate import SimulationConfig, simulate
 
 ROOT = Path(__file__).resolve().parents[1]
-
 FINAL = PipelineConfig()
-ABLATIONS: dict[str, PipelineConfig] = {
-    "Final pipeline": FINAL,
-    "Pooled winsorisation instead of per-series filter": replace(FINAL, cleaning="pooled_winsor"),
-    "Cohort offsets removed before averaging": replace(FINAL, normalisation="adjusted"),
-    "Year-on-year growth instead of calendar buckets": replace(FINAL, seasonality="yoy"),
-    "Lagged values instead of trailing means": replace(FINAL, features="lags"),
-    "50-day moving average instead of ridge": replace(FINAL, model="smooth"),
-    "All sectors traded (no sector filter)": replace(FINAL, sector_selection="none"),
-    "Sectors chosen on the test period": replace(FINAL, sector_selection="test"),
-    "Data available 3 days late": replace(FINAL, publication_lag=3),
-    "Costs of 10 bp instead of 5 bp": replace(FINAL, cost_bps=10.0),
-    "Original design (see text)": ORIGINAL,
-}
 
 
-def row(result) -> dict[str, float]:
-    s, g, n = result.ic_stats, result.perf_gross, result.perf_net
-    return {
-        "mean_ic": s["mean_ic"],
-        "t_stat_nw": s["t_stat_nw"],
-        "gross_sharpe": g["sharpe"],
-        "net_sharpe": n["sharpe"],
-        "net_return": n["ann_return"],
-        "net_vol": n["ann_vol"],
-        "max_drawdown": n["max_drawdown"],
-        "turnover": float(result.backtest.turnover.mean()),
-    }
+def _complete_records(seeds: tuple[int, ...], cache_dir: Path) -> list[dict]:
+    """Load cached evaluation records that hold every variant."""
+    records = []
+    for seed in seeds:
+        path = cache_dir / f"seed_{seed}.json"
+        if not path.exists():
+            continue
+        try:
+            record = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            continue  # a concurrent writer is mid-file; it will parse on the next run
+        if set(record.get("variants", {})) >= set(study.VARIANTS):
+            records.append(record)
+    return records
 
 
-def markdown_table(df: pd.DataFrame) -> str:
-    fmt = {
-        "mean_ic": "{:.4f}",
-        "t_stat_nw": "{:.1f}",
-        "gross_sharpe": "{:.2f}",
-        "net_sharpe": "{:.2f}",
-        "net_return": "{:.1%}",
-        "net_vol": "{:.1%}",
-        "max_drawdown": "{:.1%}",
-        "turnover": "{:.2f}",
-    }
-    header = "| " + " | ".join([df.index.name or ""] + list(df.columns)) + " |"
-    sep = "|" + "---|" * (len(df.columns) + 1)
+def _sweep_records(cache_dir: Path) -> list[dict]:
+    records = []
+    for param, level, _, _ in study.sweep_cells():
+        for seed in study.SENSITIVITY_SEEDS:
+            path = study.sweep_cell_path(param, level, seed, cache_dir)
+            if path.exists():
+                records.append(json.loads(path.read_text()))
+    return records
+
+
+def markdown_table(frame: pd.DataFrame, floatfmt: str = "{:.4f}") -> str:
+    """Render a frame as a GitHub-flavoured Markdown table."""
+    header = "| " + " | ".join([frame.index.name or ""] + [str(c) for c in frame.columns]) + " |"
+    sep = "|" + "---|" * (len(frame.columns) + 1)
     lines = [header, sep]
-    for name, r in df.iterrows():
-        cells = [fmt.get(c, "{:.4f}").format(v) if pd.notna(v) else "" for c, v in r.items()]
+    for name, row in frame.iterrows():
+        cells = [floatfmt.format(v) if isinstance(v, (int, float, np.floating)) else str(v) for v in row]
         lines.append("| " + " | ".join([str(name)] + cells) + " |")
     return "\n".join(lines)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--seed", type=int, default=2024)
-    parser.add_argument("--extra-seeds", type=int, nargs="*", default=[2025, 2026, 2027, 2028])
-    args = parser.parse_args()
+def illustrative_diagnostics(seed: int, fig_dir: Path) -> dict:
+    """Recompute one simulation in full for the diagnostic figures and detail numbers.
 
-    results_dir, fig_dir = ROOT / "results", ROOT / "docs" / "figures"
-    results_dir.mkdir(exist_ok=True)
-    fig_dir.mkdir(parents=True, exist_ok=True)
+    The performance claims come from the seed distribution; this single seed only
+    supplies the illustrative figures (cleaning, seasonality, lag profile, sector
+    skill, cumulative P&L) and the matching detail fields.
 
-    data = simulate(SimulationConfig(seed=args.seed))
+    Args:
+        seed: The illustrative evaluation seed.
+        fig_dir: Directory the figures are written to.
+
+    Returns:
+        The detail fields that go into ``summary.json`` for this seed.
+    """
+    data = simulate(SimulationConfig(seed=seed))
     meta = data.metadata.set_index("stock")
+    final = run(data, FINAL)
+    original = run(data, ORIGINAL)
+    neutral = run(data, replace(FINAL, portfolio="neutral"))
+    cost_aware = run(data, replace(FINAL, rebalance="partial", rebalance_speed=study.REBALANCE_SPEED))
+    all_sectors = run(data, replace(FINAL, sector_selection="none"))
 
-    # --- Ablations on the main evaluation seed ---------------------------------------------
-    results = {name: run(data, cfg) for name, cfg in ABLATIONS.items()}
-    table = pd.DataFrame({name: row(r) for name, r in results.items()}).T
-    table.index.name = "Variant"
-    oracle = oracle_ic(data)
-    oracle_full = oracle_ic(data, card_only=False)
-    final = results["Final pipeline"]
-
-    # --- Robustness across further evaluation seeds ---------------------------------------
-    seeds = [args.seed, *args.extra_seeds]
-    robust_rows = []
-    for seed in seeds:
-        d = data if seed == args.seed else simulate(SimulationConfig(seed=seed))
-        f = results["Final pipeline"] if seed == args.seed else run(d, FINAL)
-        o = results["Original design (see text)"] if seed == args.seed else run(d, ORIGINAL)
-        ts_cfg = ABLATIONS["All sectors traded (no sector filter)"]
-        ts = results["All sectors traded (no sector filter)"] if seed == args.seed else run(d, ts_cfg)
-        robust_rows.append(
-            {
-                "seed": seed,
-                "oracle_ic": oracle_ic(d)["mean_ic"],
-                "oracle_full_ic": oracle_ic(d, card_only=False)["mean_ic"],
-                "final_ic": f.ic_stats["mean_ic"],
-                "final_t": f.ic_stats["t_stat_nw"],
-                "final_net_sharpe": f.perf_net["sharpe"],
-                "no_filter_ic": ts.ic_stats["mean_ic"],
-                "no_filter_net_sharpe": ts.perf_net["sharpe"],
-                "original_ic": o.ic_stats["mean_ic"],
-                "original_net_sharpe": o.perf_net["sharpe"],
-            }
-        )
-    robust = pd.DataFrame(robust_rows).set_index("seed")
-
-    # --- Diagnostics for figures ---------------------------------------------------------------
     cube, _ = panel.to_cube(data.spend)
     logs, _, _ = panel.log_and_filter(cube)
     active = panel.active_cohorts(logs)
@@ -135,15 +105,14 @@ def main() -> None:
             for year, coefs in final.coefficients.iterrows()
         }
     ).T
-    sector_ic = ic_by_group(final.prediction, final.fwd_returns, meta["sector_name"])
+    sector_ic = ic_by_group(all_sectors.prediction, all_sectors.fwd_returns, meta["sector_name"])
     exposure = meta.groupby("sector_name")["card_share"].mean()
 
     plotting.cohorts_vs_spend(total, normalised, active, fig_dir / "cohorts_vs_spend.png")
     disc = meta.index[meta["sector"] == 25]
     plotting.seasonality(normalised[disc], adjusted[disc], fig_dir / "seasonality.png")
-    plotting.clipping_vs_size(
-        clipped, meta["revenue"] + np.log(meta["card_share"]), fig_dir / "pooled_clipping.png"
-    )
+    size = meta["revenue"] + np.log(meta["card_share"])
+    plotting.clipping_vs_size(clipped, size, fig_dir / "pooled_clipping.png")
     plotting.lag_profile(profiles, None, fig_dir / "lag_profile.png")
     plotting.ic_by_sector(sector_ic, exposure, fig_dir / "ic_by_sector.png")
     plotting.cumulative_pnl(
@@ -151,64 +120,157 @@ def main() -> None:
         fig_dir / "pnl_final.png",
         "Final pipeline: dollar-neutral quintile spread",
     )
-    orig = results["Original design (see text)"]
     market = final.fwd_returns.mean(axis=1)
     plotting.cumulative_pnl(
         {
-            "original long-only portfolio": orig.backtest.net,
-            "equal-weight market": market.loc[orig.backtest.net.index],
+            "original long-only portfolio": original.backtest.net,
+            "equal-weight market": market.loc[original.backtest.net.index],
         },
         fig_dir / "pnl_original_vs_market.png",
         "Original design: long-only top half vs the market",
     )
+    plotting.cumulative_pnl(
+        {
+            "final long-short": final.backtest.net,
+            "beta- and sector-neutral": neutral.backtest.net,
+            "cost-aware rebalancing": cost_aware.backtest.net,
+        },
+        fig_dir / "portfolio_variants.png",
+        "Portfolio variants on the illustrative seed, net of costs",
+    )
 
-    # --- Write results ------------------------------------------------------------------
-    summary = {
-        "evaluation_seed": args.seed,
-        "test_period": [str(final.prediction.index.min().date()), str(final.prediction.index.max().date())],
+    sector_ic.to_csv(ROOT / "results" / "ic_by_sector.csv")
+    stacked_active = active.stack()
+    demeaned_total = (total - total.mean()).stack().reindex(stacked_active.index).fillna(0.0)
+    corr_active = float(np.corrcoef(stacked_active, demeaned_total)[0, 1])
+    return {
         "cleaning_report": final.cleaning,
-        "oracle": oracle,
-        "oracle_full_information": oracle_full,
-        "final_ic": final.ic_stats,
-        "final_gross": final.perf_gross,
-        "final_net": final.perf_net,
         "final_ridge_alphas": {int(k): float(v) for k, v in final.alphas.items()},
         "final_window_coefficients": {
             int(y): {int(w): float(c) for w, c in r.items()} for y, r in final.coefficients.iterrows()
         },
-        "original_ic": orig.ic_stats,
-        "original_net": orig.perf_net,
-        "original_sectors": {int(k): v for k, v in orig.sectors.items()},
-        "market_equal_weight": {
-            "ann_return": float(market.mean() * 252),
-            "ann_vol": float(market.std() * np.sqrt(252)),
-        },
         "max_clipped_share": float(clipped.max()),
         "stocks_over_half_clipped": int((clipped > 0.5).sum()),
-        "corr_total_vs_active": float(
-            np.corrcoef(
-                active.stack(), (total - total.mean()).stack().reindex(active.stack().index).fillna(0)
-            )[0, 1]
-        ),
+        "corr_total_vs_active": corr_active,
+        "net_results": {
+            "final": final.perf_net,
+            "original": original.perf_net,
+            "beta_sector_neutral": neutral.perf_net,
+            "cost_aware": cost_aware.perf_net,
+            "market_equal_weight": {
+                "ann_return": float(market.mean() * 252),
+                "ann_vol": float(market.std() * np.sqrt(252)),
+            },
+        },
+        "turnover": {
+            "final": float(final.backtest.turnover.mean()),
+            "beta_sector_neutral": float(neutral.backtest.turnover.mean()),
+            "cost_aware": float(cost_aware.backtest.turnover.mean()),
+        },
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--seeds", type=int, nargs="*", default=list(study.EVALUATION_SEEDS))
+    parser.add_argument("--illustrative-seed", type=int, default=study.EVALUATION_SEEDS[0])
+    parser.add_argument("--cache-dir", type=Path, default=ROOT / "results" / ".cache")
+    parser.add_argument("--fill-only", action="store_true", help="only fill the cache, write no results")
+    args = parser.parse_args()
+
+    results_dir, fig_dir = ROOT / "results", ROOT / "docs" / "figures"
+    results_dir.mkdir(exist_ok=True)
+    fig_dir.mkdir(parents=True, exist_ok=True)
+    eval_cache, sweep_cache = args.cache_dir / "eval", args.cache_dir / "sweep"
+
+    for seed in args.seeds:
+        study.load_or_evaluate_seed(seed, eval_cache)
+    if args.fill_only:
+        done = len(_complete_records(study.EVALUATION_SEEDS, eval_cache))
+        print(f"filled cache: {done}/{len(study.EVALUATION_SEEDS)} evaluation seeds complete")
+        return
+
+    for param, level, factory, override in study.sweep_cells():
+        for seed in study.SENSITIVITY_SEEDS:
+            study.load_or_evaluate_sweep_cell(param, level, factory, override, seed, sweep_cache)
+
+    seed_results = _complete_records(study.EVALUATION_SEEDS, eval_cache)
+    sweeps = _sweep_records(sweep_cache)
+    expected_sweeps = len(study.sweep_cells()) * len(study.SENSITIVITY_SEEDS)
+    if len(seed_results) < len(study.EVALUATION_SEEDS) or len(sweeps) < expected_sweeps:
+        print(
+            f"cache incomplete: {len(seed_results)}/{len(study.EVALUATION_SEEDS)} evaluation seeds and "
+            f"{len(sweeps)}/{expected_sweeps} sweep cells. Run again to continue; "
+            "results are written once the cache is complete."
+        )
+        return
+
+    agg = study.aggregate(seed_results)
+    distribution, paired = agg["distribution"], agg["paired"]
+    sensitivity = study.aggregate_sensitivity(sweeps)
+
+    detail = illustrative_diagnostics(args.illustrative_seed, fig_dir)
+    strip_variants = [
+        "Final pipeline",
+        "Beta- and sector-neutral spread",
+        "All sectors traded (no sector filter)",
+        "Original design (see text)",
+    ]
+    samples = {
+        name: np.array([record["variants"][name]["net_sharpe"] for record in seed_results])
+        for name in strip_variants
+    }
+    plotting.sharpe_distribution(samples, fig_dir / "sharpe_distribution.png")
+    plotting.paired_differences(paired, fig_dir / "ablation_differences.png")
+    plotting.sensitivity(sensitivity, fig_dir / "sensitivity.png")
+
+    summary = {
+        "evaluation_seeds": {
+            "n": len(seed_results),
+            "first": int(min(r["seed"] for r in seed_results)),
+            "last": int(max(r["seed"] for r in seed_results)),
+        },
+        "illustrative_seed": args.illustrative_seed,
+        "oracle_ic": agg["summary"]["oracle_ic"],
+        "oracle_full_ic": agg["summary"]["oracle_full_ic"],
+        "final_ic": agg["summary"]["final_ic"],
+        "final_net_sharpe": agg["summary"]["final_net_sharpe"],
+        "final_recovery": agg["summary"]["final_recovery"],
+        "final_t_min": agg["summary"]["final_t_min"],
+        "final_t_max": agg["summary"]["final_t_max"],
+        "final_sharpe_min": agg["summary"]["final_sharpe_min"],
+        "final_sharpe_max": agg["summary"]["final_sharpe_max"],
+        "distribution": distribution.to_dict(orient="index"),
+        "paired": paired.to_dict(orient="index"),
+        "sensitivity": {f"{p} / {lv}": row for (p, lv), row in sensitivity.to_dict(orient="index").items()},
+        **detail,
     }
     (results_dir / "summary.json").write_text(json.dumps(summary, indent=2))
-    table.to_csv(results_dir / "ablation.csv")
-    robust.to_csv(results_dir / "robustness.csv")
-    sector_ic.to_csv(results_dir / "ic_by_sector.csv")
-    md = [
-        f"# Results (evaluation seed {args.seed})",
+    distribution.to_csv(results_dir / "ablation_distribution.csv")
+    paired.to_csv(results_dir / "paired_diffs.csv")
+    sensitivity.to_csv(results_dir / "sensitivity.csv")
+
+    span = summary["evaluation_seeds"]
+    tables = [
+        f"# Results across {len(seed_results)} evaluation seeds ({span['first']} to {span['last']})",
         "",
-        f"Oracle mean IC: {oracle['mean_ic']:.4f}",
+        f"Oracle mean IC: {agg['summary']['oracle_ic']['mean']:.4f}",
         "",
-        markdown_table(table),
+        "## Distribution of skill and net performance",
         "",
-        "## Robustness across evaluation seeds",
+        markdown_table(distribution.round(4)),
         "",
-        markdown_table(robust),
+        "## Paired difference from the final pipeline",
+        "",
+        markdown_table(paired.round(4)),
+        "",
+        "## Dependence on the simulator",
+        "",
+        markdown_table(sensitivity.round(4)),
         "",
     ]
-    (results_dir / "tables.md").write_text("\n".join(md))
-    print("\n".join(md))
+    (results_dir / "tables.md").write_text("\n".join(tables))
+    print(f"wrote results for {len(seed_results)} evaluation seeds and {len(sweeps)} sweep records")
 
 
 if __name__ == "__main__":

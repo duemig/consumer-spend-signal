@@ -158,3 +158,85 @@ def cumulative_pnl(series: dict[str, pd.Series], path: Path, title: str) -> None
     ax.set_title(title)
     ax.legend(loc="upper left")
     _save(fig, path)
+
+
+def sharpe_distribution(samples: dict[str, np.ndarray], path: Path) -> None:
+    """Spread of net Sharpe across evaluation seeds, one strip per variant.
+
+    Each point is one seed; the orange tick marks the mean. The spread between
+    seeds is usually wider than the gap between variants.
+    """
+    _style()
+    names = list(samples)
+    fig, ax = plt.subplots(figsize=(6.8, 0.52 * len(names) + 1.2))
+    rng = np.random.default_rng(0)
+    for row, name in enumerate(names):
+        values = np.asarray(samples[name], dtype=float)
+        ax.scatter(
+            values, np.full(len(values), row) + rng.uniform(-0.14, 0.14, size=len(values)),
+            s=12, color=BLUE, alpha=0.5, linewidths=0,
+        )
+        ax.plot([values.mean()], [row], marker="|", color=ORANGE, markersize=20, markeredgewidth=2.2)
+    ax.axvline(0, color=INK_2, linewidth=0.8)
+    ax.set_yticks(range(len(names)), names)
+    ax.invert_yaxis()
+    ax.set_xlabel("Net Sharpe ratio, one point per evaluation seed")
+    ax.set_title("Net Sharpe varies more between seeds than between most variants")
+    _save(fig, path)
+
+
+def paired_differences(paired: pd.DataFrame, path: Path, column: str = "d_sharpe", title: str = "") -> None:
+    """Mean paired difference from the final pipeline, with a 95% interval, per variant.
+
+    A variant whose interval straddles zero (grey) is within noise. One that clears
+    zero (blue) is distinguishable from the final pipeline across the seeds.
+    """
+    _style()
+    data = paired.sort_values(column)
+    names = list(data.index)
+    centre = data[column].to_numpy()
+    lo, hi = data[f"{column}_lo"].to_numpy(), data[f"{column}_hi"].to_numpy()
+    straddles = (lo <= 0) & (hi >= 0)
+    fig, ax = plt.subplots(figsize=(7.0, 0.5 * len(names) + 1.2))
+    for row in range(len(names)):
+        colour = INK_2 if straddles[row] else BLUE
+        ax.plot([lo[row], hi[row]], [row, row], color=colour, linewidth=1.6)
+        ax.plot([centre[row]], [row], marker="o", color=colour, markersize=5)
+    ax.axvline(0, color=ORANGE, linewidth=1.0)
+    ax.set_yticks(range(len(names)), names)
+    ax.invert_yaxis()
+    ax.set_xlabel("Difference in net Sharpe from the final pipeline (95% CI over seeds)")
+    ax.set_title(title or "Most single choices are within the noise between seeds")
+    _save(fig, path)
+
+
+def sensitivity(table: pd.DataFrame, path: Path) -> None:
+    """How forecast skill moves as each simulator parameter changes.
+
+    One panel per parameter. The oracle IC is the ceiling a card panel could reach,
+    the final IC is what the pipeline recovers, and the moving-average IC stays near
+    zero throughout.
+    """
+    _style()
+    params = [name for name in dict.fromkeys(table.index.get_level_values(0)) if name != "Baseline"]
+    base = table.loc[("Baseline", "base")]
+    columns = 3
+    rows = -(-len(params) // columns)
+    fig, axes = plt.subplots(rows, columns, figsize=(3.2 * columns, 2.8 * rows), squeeze=False)
+    handles_labels = None
+    for axis, param in zip(axes.flat, params, strict=False):
+        sub = table.loc[param]
+        levels = ["base", *list(sub.index)]
+        x = range(len(levels))
+        axis.plot(x, [base["oracle_ic"], *sub["oracle_ic"]], marker="o", color=INK_2, label="oracle IC")
+        axis.plot(x, [base["final_ic"], *sub["final_ic"]], marker="o", color=BLUE, label="final IC")
+        axis.plot(x, [base["ma_ic"], *sub["ma_ic"]], marker="o", color=ORANGE, label="50-day MA IC")
+        axis.axhline(0, color=GRID, linewidth=0.8)
+        axis.set_xticks(list(x), levels, rotation=20, fontsize=7)
+        axis.set_title(param)
+        handles_labels = axis.get_legend_handles_labels()
+    for axis in axes.flat[len(params):]:
+        axis.set_visible(False)
+    if handles_labels is not None:
+        fig.legend(*handles_labels, loc="lower right", bbox_to_anchor=(0.98, 0.08))
+    _save(fig, path)

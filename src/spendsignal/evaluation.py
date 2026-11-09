@@ -52,6 +52,32 @@ def ic_summary(ic: pd.Series, nw_lags: int = 10) -> dict[str, float]:
     }
 
 
+def bootstrap_mean_ci(
+    values: np.ndarray | list[float], confidence: float = 0.95, n_boot: int = 10_000, seed: int = 0
+) -> dict[str, float]:
+    """Sample mean and a percentile bootstrap confidence interval for the mean.
+
+    Args:
+        values: A one-dimensional sample; null entries are dropped.
+        confidence: Confidence level of the interval, for example 0.95.
+        n_boot: Number of bootstrap resamples.
+        seed: Seed for the resampling, so the interval is reproducible.
+
+    Returns:
+        A mapping with the sample ``mean`` and the interval ends ``lo`` and ``hi``.
+        All three are null when the sample is empty.
+    """
+    sample = np.asarray(values, dtype=float)
+    sample = sample[~np.isnan(sample)]
+    if len(sample) == 0:
+        return {"mean": float("nan"), "lo": float("nan"), "hi": float("nan")}
+    rng = np.random.default_rng(seed)
+    resampled = rng.choice(sample, size=(n_boot, len(sample)), replace=True).mean(axis=1)
+    tail = (1.0 - confidence) / 2.0
+    lo, hi = np.quantile(resampled, [tail, 1.0 - tail])
+    return {"mean": float(sample.mean()), "lo": float(lo), "hi": float(hi)}
+
+
 def ic_by_group(
     prediction: pd.DataFrame, target: pd.DataFrame, groups: pd.Series, min_names: int = 5
 ) -> pd.DataFrame:

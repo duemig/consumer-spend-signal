@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "ruff>=0.4"]
+report = ["playwright>=1.40", "seaborn>=0.13", "scipy>=1.11"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -31,3 +32,7 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "NPY"]
+
+[tool.ruff.lint.per-file-ignores]
+# build_report.py embeds the report as an inline HTML template, so its prose lines run long.
+"scripts/build_report.py" = ["E501"]

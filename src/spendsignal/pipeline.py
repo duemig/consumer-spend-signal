@@ -22,10 +22,10 @@ class PipelineConfig:
     cleaning: Literal["robust", "pooled_winsor"] = "robust"
     normalisation: Literal["mean", "adjusted"] = "mean"
     seasonality: Literal["bucket", "yoy", "bucket_stock"] = "bucket"
-    model: Literal["ridge", "smooth"] = "ridge"
+    model: Literal["ridge", "smooth", "tree"] = "ridge"
     features: Literal["windows", "lags"] = "windows"
     sector_selection: Literal["train", "none", "test"] = "train"
-    portfolio: Literal["long_short", "long_only"] = "long_short"
+    portfolio: Literal["long_short", "long_only", "neutral"] = "long_short"
     publication_lag: int = 0
     forecast_halflife: float = 0.0
     smooth_window: int = 50
@@ -35,6 +35,11 @@ class PipelineConfig:
     first_test_year: int = 2019
     train_start: str = "2017-03-01"
     cost_bps: float = 5.0
+    borrow_bps_annual: float = 0.0
+    rebalance: Literal["full", "band", "partial"] = "full"
+    no_trade_band: float = 0.0
+    rebalance_speed: float = 1.0
+    beta_window: int = 252
 
 
 #: Closest equivalent of the original study within this framework: pooled
@@ -113,16 +118,27 @@ def run(data: SimulatedData, cfg: PipelineConfig | None = None) -> PipelineResul
 
     coefficients = alphas = None
     in_sample: dict[int, pd.DataFrame] = {}
-    if cfg.model == "ridge":
-        wf = forecast.walk_forward_ridge(
-            predictor,
-            fwd,
-            lags=cfg.windows if cfg.features == "windows" else cfg.lags,
-            features=cfg.features,
-            first_test_year=cfg.first_test_year,
-            first_train_date=cfg.train_start,
-            alphas=cfg.ridge_alphas,
-        )
+    if cfg.model in ("ridge", "tree"):
+        lags = cfg.windows if cfg.features == "windows" else cfg.lags
+        if cfg.model == "ridge":
+            wf = forecast.walk_forward_ridge(
+                predictor,
+                fwd,
+                lags=lags,
+                features=cfg.features,
+                first_test_year=cfg.first_test_year,
+                first_train_date=cfg.train_start,
+                alphas=cfg.ridge_alphas,
+            )
+        else:
+            wf = forecast.walk_forward_tree(
+                predictor,
+                fwd,
+                lags=lags,
+                features=cfg.features,
+                first_test_year=cfg.first_test_year,
+                first_train_date=cfg.train_start,
+            )
         prediction = wf.predictions
         coefficients, alphas, in_sample = wf.coefficients, wf.alphas, wf.in_sample
     else:
@@ -156,11 +172,17 @@ def run(data: SimulatedData, cfg: PipelineConfig | None = None) -> PipelineResul
 
     pred_universe = prediction.where(universe)
     ic = evaluation.daily_rank_ic(pred_universe, fwd_test)
-    if cfg.portfolio == "long_short":
-        weights = backtest.long_short_weights(prediction, universe=universe)
+    if cfg.portfolio == "neutral":
+        beta = backtest.estimate_beta(returns_wide(data), window=cfg.beta_window)
+        targets = backtest.neutral_weights(prediction, beta, sector, universe=universe)
+    elif cfg.portfolio == "long_only":
+        targets = backtest.long_only_weights(prediction, universe=universe)
     else:
-        weights = backtest.long_only_weights(prediction, universe=universe)
-    bt = backtest.run_backtest(weights, fwd_test, cost_bps=cfg.cost_bps)
+        targets = backtest.long_short_weights(prediction, universe=universe)
+    weights = backtest.apply_rebalance_rule(targets, cfg.rebalance, cfg.no_trade_band, cfg.rebalance_speed)
+    bt = backtest.run_backtest(
+        weights, fwd_test, cost_bps=cfg.cost_bps, borrow_bps_annual=cfg.borrow_bps_annual
+    )
 
     return PipelineResult(
         config=cfg,
