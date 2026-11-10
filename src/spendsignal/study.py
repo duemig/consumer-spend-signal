@@ -14,6 +14,7 @@ any evaluation seed was run. See :data:`DEVELOPMENT_SEEDS` and
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -270,15 +271,15 @@ def _baseline_factory(seed: int) -> SimulationConfig:
     return SimulationConfig(seed=seed)
 
 
-def _sim_factory(field: str, value: float):
+def _sim_factory(field: str, value: float) -> Callable[[int], SimulationConfig]:
     return lambda seed: SimulationConfig(seed=seed, **{field: value})
 
 
-def _cardshare_factory(scale: float):
+def _cardshare_factory(scale: float) -> Callable[[int], SimulationConfig]:
     return lambda seed: SimulationConfig(seed=seed, sectors=_scaled_sectors(scale))
 
 
-def sweep_cells() -> list[tuple[str, str, object, dict]]:
+def sweep_cells() -> list[tuple[str, str, Callable[[int], SimulationConfig], dict]]:
     """Describe the simulator sweep as a baseline cell plus one cell per level.
 
     Returns:
@@ -287,7 +288,9 @@ def sweep_cells() -> list[tuple[str, str, object, dict]]:
         is applied to each swept variant's config. The baseline cell is the default
         data-generating process and is shared by every parameter.
     """
-    cells: list[tuple[str, str, object, dict]] = [("Baseline", "base", _baseline_factory, {})]
+    cells: list[tuple[str, str, Callable[[int], SimulationConfig], dict]] = [
+        ("Baseline", "base", _baseline_factory, {})
+    ]
     sim_grids = {
         "Signal strength": ("alpha_scale", {"weak (0.5x)": 0.0003, "strong (2x)": 0.0012}),
         "Learning half-life": ("learning_halflife_days", {"fast (10d)": 10.0, "slow (40d)": 40.0}),

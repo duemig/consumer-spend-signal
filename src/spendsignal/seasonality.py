@@ -39,7 +39,7 @@ def bucket_adjust(
     """
     _check_calendar(level)
     dates = level.index
-    weekend = np.asarray(dates.dayofweek >= 5)
+    weekend = np.asarray(dates.day_of_week >= 5)
     season = np.asarray(dates.month >= 11)
     step1 = _subtract_expanding_group_mean(
         level, groups, weekend, min_obs_true=min_weekend_obs, min_obs_false=min_weekday_obs
@@ -73,7 +73,7 @@ def to_business_days(daily: pd.DataFrame) -> pd.DataFrame:
     """
     _check_calendar(daily)
     dates = daily.index
-    shift = np.select([dates.dayofweek == 5, dates.dayofweek == 6], [2, 1], default=0)
+    shift = np.select([dates.day_of_week == 5, dates.day_of_week == 6], [2, 1], default=0)
     target = dates + pd.to_timedelta(shift, unit="D")
     out = daily.groupby(target).mean()
     out = out.loc[out.index <= dates[-1]]  # a trailing weekend has no Monday yet

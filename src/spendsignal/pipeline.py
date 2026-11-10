@@ -119,12 +119,12 @@ def run(data: SimulatedData, cfg: PipelineConfig | None = None) -> PipelineResul
     coefficients = alphas = None
     in_sample: dict[int, pd.DataFrame] = {}
     if cfg.model in ("ridge", "tree"):
-        lags = cfg.windows if cfg.features == "windows" else cfg.lags
+        spans = cfg.windows if cfg.features == "windows" else cfg.lags
         if cfg.model == "ridge":
             wf = forecast.walk_forward_ridge(
                 predictor,
                 fwd,
-                lags=lags,
+                spans=spans,
                 features=cfg.features,
                 first_test_year=cfg.first_test_year,
                 first_train_date=cfg.train_start,
@@ -134,7 +134,7 @@ def run(data: SimulatedData, cfg: PipelineConfig | None = None) -> PipelineResul
             wf = forecast.walk_forward_tree(
                 predictor,
                 fwd,
-                lags=lags,
+                spans=spans,
                 features=cfg.features,
                 first_test_year=cfg.first_test_year,
                 first_train_date=cfg.train_start,

@@ -35,7 +35,7 @@ def test_inactive_cohorts_have_no_rows(small_data):
 
 def test_returns_are_business_days(small_data):
     dates = pd.DatetimeIndex(small_data.returns["date"].unique())
-    assert (dates.dayofweek < 5).all()
+    assert (dates.day_of_week < 5).all()
     assert np.isfinite(small_data.returns["ret"]).all()
 
 

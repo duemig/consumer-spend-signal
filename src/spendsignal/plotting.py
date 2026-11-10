@@ -80,7 +80,7 @@ def seasonality(raw: pd.DataFrame, adjusted: pd.DataFrame, path: Path) -> None:
     raw_avg = (raw - raw.mean()).mean(axis=1)
     adj_avg = adjusted.mean(axis=1)
     dow = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-    by_dow = raw_avg.groupby(raw_avg.index.dayofweek).mean()
+    by_dow = raw_avg.groupby(raw_avg.index.day_of_week).mean()
     axes[0].bar(dow, by_dow.to_numpy(), color=BLUE, width=0.6)
     axes[0].set_title("Day-of-week pattern, consumer discretionary")
     axes[0].set_ylabel("Average deviation (log)")

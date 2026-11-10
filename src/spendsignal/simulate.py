@@ -208,8 +208,10 @@ def _market_factor(rng: np.random.Generator, bdays: pd.DatetimeIndex, vol: float
         rebound = (bdays > "2020-03-23") & (bdays <= "2020-08-31")
         stress = (bdays >= "2020-02-20") & (bdays <= "2020-05-31")
         f[stress] = rng.normal(0.0, 3 * vol, size=stress.sum())
-        f[crash] += np.log(0.66) / crash.sum()  # about -34% peak to trough
-        f[rebound] += np.log(1.50) / rebound.sum()
+        if crash.any():
+            f[crash] += np.log(0.66) / crash.sum()  # about -34% peak to trough
+        if rebound.any():
+            f[rebound] += np.log(1.50) / rebound.sum()
     return f
 
 
@@ -248,7 +250,7 @@ def simulate(config: SimulationConfig | None = None) -> SimulatedData:
     # --- Expected panel spend -----------------------------------------------------------
     years = ((days - days[0]).days / 365.25).to_numpy()
     holiday = _holiday_season(days)
-    dow = days.dayofweek.to_numpy()
+    dow = days.day_of_week.to_numpy()
     season = np.zeros((n_days, n_stocks))
     covid = np.zeros((n_days, n_stocks))
     for code in np.unique(codes_arr):

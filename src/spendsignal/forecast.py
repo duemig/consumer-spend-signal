@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -50,6 +51,17 @@ def window_features(predictor: pd.DataFrame, windows: Sequence[int]) -> dict[int
     }
 
 
+def _build_features(
+    predictor: pd.DataFrame, spans: Sequence[int], features: Literal["lags", "windows"]
+) -> dict[int, pd.DataFrame]:
+    """Single lags or trailing means of the predictor over ``spans`` trading days."""
+    if features == "lags":
+        return lagged_features(predictor, spans)
+    if features == "windows":
+        return window_features(predictor, spans)
+    raise ValueError(f"unknown feature set: {features}")
+
+
 def implied_lag_weights(coefficients: pd.Series, max_lag: int | None = None) -> pd.Series:
     """Weight on each daily lag implied by ridge coefficients on trailing-mean features.
 
@@ -75,6 +87,37 @@ def _stack(features: dict[int, pd.DataFrame], target: pd.DataFrame | None, dates
     return X.dropna(), None
 
 
+def _yearly_splits(dates: pd.DatetimeIndex, first_test_year: int):
+    """Yield ``(year, train_dates, test_dates)`` for each out-of-sample year.
+
+    Training uses every date before 1 January of the test year except the last
+    one, whose forward return is only known inside the test year.
+    """
+    for year in range(first_test_year, int(dates.max().year) + 1):
+        train_dates = dates[dates < pd.Timestamp(year=year, month=1, day=1)][:-1]
+        test_dates = dates[dates.year == year]
+        if len(train_dates) and len(test_dates):
+            yield year, train_dates, test_dates
+
+
+def _validation_data(features: dict[int, pd.DataFrame], target: pd.DataFrame, train_dates: pd.DatetimeIndex):
+    """Inner-train design and target plus a last-year validation design, for tuning.
+
+    Returns ``(X, y, X_val)`` stacked for a held-out comparison of hyperparameters,
+    or ``None`` when there is too little history for a reliable comparison.
+    """
+    last_year = train_dates.max().year
+    inner_train = train_dates[train_dates.year < last_year][:-1]
+    valid = train_dates[train_dates.year == last_year]
+    if len(inner_train) < 250 or len(valid) < 100:
+        return None
+    X, y = _stack(features, target, inner_train)
+    X_val, _ = _stack(features, None, valid)
+    if len(X) < 5_000 or len(X_val) < 1_000:
+        return None
+    return X, y, X_val
+
+
 @dataclass
 class WalkForwardResult:
     predictions: pd.DataFrame
@@ -86,8 +129,8 @@ class WalkForwardResult:
 def walk_forward_ridge(
     predictor: pd.DataFrame,
     fwd_returns: pd.DataFrame,
-    lags: Sequence[int] = (0, 5, 10, 15, 20, 30, 40, 50, 60),
-    features: str = "lags",
+    spans: Sequence[int] = (0, 5, 10, 15, 20, 30, 40, 50, 60),
+    features: Literal["lags", "windows"] = "lags",
     first_test_year: int = 2019,
     first_train_date: str | pd.Timestamp | None = None,
     alphas: Sequence[float] = (1.0, 10.0, 100.0, 1_000.0, 10_000.0),
@@ -103,37 +146,25 @@ def walk_forward_ridge(
     ``features="lags"`` regresses on lagged values (the original design);
     ``features="windows"`` regresses on trailing means over the given windows.
     """
-    if features == "lags":
-        feats = lagged_features(predictor, lags)
-    elif features == "windows":
-        feats = window_features(predictor, lags)
-    else:
-        raise ValueError(f"unknown feature set: {features}")
-    features_ = feats
+    feats = _build_features(predictor, spans, features)
     target = fwd_returns.sub(fwd_returns.mean(axis=1), axis=0)
     dates = predictor.index
     if first_train_date is not None:
         dates = dates[dates >= pd.Timestamp(first_train_date)]
-    last_year = int(dates.max().year)
 
     preds, coefs, chosen, in_sample = [], {}, {}, {}
-    for year in range(first_test_year, last_year + 1):
-        train_dates = dates[dates < pd.Timestamp(year=year, month=1, day=1)][:-1]
-        test_dates = dates[dates.year == year]
-        if len(train_dates) == 0 or len(test_dates) == 0:
-            continue
-        alpha = _choose_alpha(features_, target, train_dates, alphas)
-        X, y = _stack(features_, target, train_dates)
+    for year, train_dates, test_dates in _yearly_splits(dates, first_test_year):
+        alpha = _choose_alpha(feats, target, train_dates, alphas)
+        X, y = _stack(feats, target, train_dates)
         if len(X) == 0:
             continue
         model = Ridge(alpha=alpha).fit(X.to_numpy(), y.to_numpy())
-        X_test, _ = _stack(features_, None, test_dates)
+        X_test, _ = _stack(feats, None, test_dates)
         p = pd.Series(model.predict(X_test.to_numpy()), index=X_test.index).unstack()
         preds.append(p)
-        coefs[year] = pd.Series(model.coef_, index=list(lags))
+        coefs[year] = pd.Series(model.coef_, index=list(spans))
         chosen[year] = alpha
-        fitted = pd.Series(model.predict(X.to_numpy()), index=X.index).unstack()
-        in_sample[year] = fitted
+        in_sample[year] = pd.Series(model.predict(X.to_numpy()), index=X.index).unstack()
 
     predictions = pd.concat(preds).reindex(columns=predictor.columns)
     return WalkForwardResult(
@@ -150,15 +181,10 @@ def _choose_alpha(
     train_dates: pd.DatetimeIndex,
     alphas: Sequence[float],
 ) -> float:
-    last_year = train_dates.max().year
-    inner_train = train_dates[train_dates.year < last_year][:-1]
-    valid = train_dates[train_dates.year == last_year]
-    if len(inner_train) < 250 or len(valid) < 100:
+    split = _validation_data(features, target, train_dates)
+    if split is None:
         return float(np.median(alphas))
-    X, y = _stack(features, target, inner_train)
-    X_val, _ = _stack(features, None, valid)
-    if len(X) < 5_000 or len(X_val) < 1_000:  # not enough history to compare penalties
-        return float(np.median(alphas))
+    X, y, X_val = split
     scores = {}
     for alpha in alphas:
         model = Ridge(alpha=alpha).fit(X.to_numpy(), y.to_numpy())
@@ -170,8 +196,8 @@ def _choose_alpha(
 def walk_forward_tree(
     predictor: pd.DataFrame,
     fwd_returns: pd.DataFrame,
-    lags: Sequence[int] = (5, 10, 20, 40, 60, 120),
-    features: str = "windows",
+    spans: Sequence[int] = (5, 10, 20, 40, 60, 120),
+    features: Literal["lags", "windows"] = "windows",
     first_test_year: int = 2019,
     first_train_date: str | pd.Timestamp | None = None,
     learning_rates: Sequence[float] = (0.02, 0.05, 0.1),
@@ -192,7 +218,7 @@ def walk_forward_tree(
     Args:
         predictor: Daily spend predictor as a (dates x stocks) frame.
         fwd_returns: Forward returns r(t, t+1) dated t, aligned to the predictor.
-        lags: Trailing-mean windows (``features="windows"``) or lags in days.
+        spans: Trailing-mean windows (``features="windows"``) or lags in days.
         features: ``"windows"`` for trailing means, ``"lags"`` for single lags.
         first_test_year: First calendar year forecast out of sample.
         first_train_date: (Optional) earliest date used for training; ``None``
@@ -207,12 +233,11 @@ def walk_forward_tree(
         coefficient frame, the chosen learning rate per year and the in-sample
         fitted values per year.
     """
-    feats = window_features(predictor, lags) if features == "windows" else lagged_features(predictor, lags)
+    feats = _build_features(predictor, spans, features)
     target = fwd_returns.sub(fwd_returns.mean(axis=1), axis=0)
     dates = predictor.index
     if first_train_date is not None:
         dates = dates[dates >= pd.Timestamp(first_train_date)]
-    last_year = int(dates.max().year)
     settings = {
         "max_iter": max_iter,
         "max_leaf_nodes": max_leaf_nodes,
@@ -220,11 +245,7 @@ def walk_forward_tree(
     }
 
     preds, chosen, in_sample = [], {}, {}
-    for year in range(first_test_year, last_year + 1):
-        train_dates = dates[dates < pd.Timestamp(year=year, month=1, day=1)][:-1]
-        test_dates = dates[dates.year == year]
-        if len(train_dates) == 0 or len(test_dates) == 0:
-            continue
+    for year, train_dates, test_dates in _yearly_splits(dates, first_test_year):
         rate = _choose_learning_rate(feats, target, train_dates, learning_rates, settings)
         X, y = _stack(feats, target, train_dates)
         if len(X) == 0:
@@ -253,15 +274,10 @@ def _choose_learning_rate(
     rates: Sequence[float],
     settings: dict[str, float],
 ) -> float:
-    last_year = train_dates.max().year
-    inner_train = train_dates[train_dates.year < last_year][:-1]
-    valid = train_dates[train_dates.year == last_year]
-    if len(inner_train) < 250 or len(valid) < 100:
+    split = _validation_data(features, target, train_dates)
+    if split is None:
         return float(np.median(rates))
-    X, y = _stack(features, target, inner_train)
-    X_val, _ = _stack(features, None, valid)
-    if len(X) < 5_000 or len(X_val) < 1_000:  # not enough history to compare rates
-        return float(np.median(rates))
+    X, y, X_val = split
     scores = {}
     for rate in rates:
         model = HistGradientBoostingRegressor(learning_rate=rate, random_state=0, **settings)

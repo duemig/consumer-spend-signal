@@ -82,7 +82,7 @@ flowchart LR
 5. **Forecast.** Ridge regression of the next-day return (cross-sectionally demeaned) on cross-sectionally standardised trailing means of the predictor over 5, 10, 20, 40, 60 and 120 days. It is refitted every January on all earlier data, leaving out the last training day, whose return is only known in the new year. The penalty is chosen by fitting on all but the last training year and maximising the rank IC in that year.
 6. **Portfolio.** Trade only sectors whose in-sample IC in the training data has a t-statistic above 2. Each day, go long the top quintile and short the bottom quintile, equally weighted and dollar neutral. Trading costs are 5 bp per unit of one-way turnover.
 
-Every step is point-in-time. [tests/test_no_lookahead.py](tests/test_no_lookahead.py) checks that cutting off the data at a date leaves every earlier predictor value and forecast unchanged.
+Every step is point-in-time. [tests/test_no_lookahead.py](tests/test_no_lookahead.py) checks that cutting off the data at a date leaves every earlier predictor value, beta, forecast and neutral weight unchanged. The base case assumes a day's card spend is usable at that day's close; the "data available late" results show what a publication lag costs.
 
 ## Study design
 
@@ -93,7 +93,7 @@ Every step is point-in-time. [tests/test_no_lookahead.py](tests/test_no_lookahea
 
 ## Results
 
-Across the 50 evaluation seeds the card oracle has a mean rank IC of 0.0218, the ceiling for a card-based forecast. The final pipeline reaches a mean IC of 0.0156, recovering 72% of the oracle on average, with a range of 29% to 110% across seeds. Its net Sharpe ratio averages 1.05, with a 95% confidence interval of 0.92 to 1.17, but the ratio of a single seed ranges from -0.47 to 1.98 and the IC t-statistic from 1.1 to 6.7. One backtest says little; the distribution is the result.
+Across the 50 evaluation seeds the card oracle has a mean rank IC of 0.0218, the ceiling for a card-based forecast. The final pipeline reaches a mean IC of 0.0156, recovering on average 72% of the oracle's IC (the mean across seeds of each seed's ratio), from 29% to 110%: the oracle is a population ceiling, so a single finite-sample seed can land above it. Its net Sharpe ratio averages 1.05, with a 95% confidence interval of 0.92 to 1.17, but the ratio of a single seed ranges from -0.47 to 1.98 and the IC t-statistic from 1.1 to 6.7. One backtest says little; the distribution is the result.
 
 | Variant | Mean IC | Net Sharpe | 95% CI | Turnover/day |
 |---|---|---|---|---|
@@ -158,7 +158,7 @@ The full output, including per-sector statistics, the paired differences and the
 
 - **The simulator shapes the level of skill.** The sweeps above show which conclusions survive a change in the data-generating process and which do not. What they cannot show is behaviour on real card data: the study measures recovery of a known signal, not a tradable edge.
 - **Portfolio and cost model.** The book now has a beta- and sector-neutral version, a cost-aware rebalancing rule and a short borrow cost. Still absent: capacity limits, market impact, a full risk model, and financing beyond a flat borrow fee.
-- **Statistics.** Fifty evaluation seeds with a 95% bootstrap confidence interval on each paired difference. Still one test period per seed, and one simulated process.
+- **Statistics.** Fifty evaluation seeds with a 95% bootstrap confidence interval on each paired difference. The intervals are not adjusted for the fourteen comparisons against the final pipeline; the differences behind the conclusions are far larger than a Bonferroni threshold, and the one borderline case, year-on-year adjustment, is treated as such. Still one test period per seed, and one simulated process.
 
 ## Reproducing
 
@@ -188,6 +188,7 @@ python scripts/build_report.py  # rebuilds docs/report.pdf from results/
 | `src/spendsignal/backtest.py` | Long-short, long-only and beta- and sector-neutral portfolios, rebalancing, costs |
 | `src/spendsignal/pipeline.py` | Configurable end-to-end pipeline and the original-design preset |
 | `src/spendsignal/study.py` | Variant grid, per-seed evaluation, aggregation and the simulator sweeps |
+| `src/spendsignal/plotting.py` | Figures for the README and the research note |
 | `scripts/run_study.py` | Runs the study and writes all results and figures |
 | `scripts/build_report.py` | Builds the research note from `results/` |
 | `tests/` | Unit tests, point-in-time tests and the README-against-results check |
